@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Detroit Site Explorer</title>
+  <link rel="stylesheet" href="lib/leaflet/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="topbar">
+    <button class="icon-btn" id="toggleLeft" title="Show / hide layers panel" aria-label="Toggle layers panel">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+    </button>
+    <div class="brand">
+      <div class="brand-title" id="appTitle">Detroit Site Explorer</div>
+      <div class="brand-sub" id="appSubtitle"></div>
+    </div>
+
+    <div class="search">
+      <input id="searchInput" type="search" placeholder="Search address or parcel ID (connected property layers)" autocomplete="off">
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+
+    <div class="topbar-actions">
+      <label class="select-wrap" title="Base map">
+        <span class="select-label">Base map</span>
+        <select id="basemapSelect"></select>
+      </label>
+      <label class="check-wrap" id="maskToggleWrap" title="Hide the base map outside the City of Detroit limits">
+        <input type="checkbox" id="maskToggle" checked> Detroit only
+      </label>
+      <button class="btn" id="resetView" title="Return to the full Detroit view">Reset view</button>
+      <button class="btn" id="openSources" title="Dataset sources and retrieval dates">Data sources</button>
+      <button class="icon-btn" id="toggleRight" title="Show / hide property panel" aria-label="Toggle property panel">
+        <svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="2" fill="none"/><path d="M15 4v16" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="layout" id="layout">
+
+    <!-- ============ LEFT SIDEBAR: LAYERS + LEGEND ============ -->
+    <aside class="sidebar left" id="leftPanel" aria-label="Map layers">
+      <div class="panel-head">
+        <h2>Map layers</h2>
+        <button class="link-btn" id="allOff" title="Turn every layer off">Turn all off</button>
+      </div>
+      <div class="layer-tree" id="layerTree"></div>
+
+      <details class="legend" id="legendBox" open>
+        <summary>Legend</summary>
+        <div id="legend"><p class="muted small">Turn on a layer to see its symbol here.</p></div>
+      </details>
+    </aside>
+
+    <!-- ============ MAP ============ -->
+    <section class="map-wrap">
+      <div id="map" aria-label="Interactive map of Detroit"></div>
+      <div class="map-status" id="mapStatus" hidden></div>
+    </section>
+
+    <!-- ============ RIGHT SIDEBAR: PROPERTY + SHORTLIST ============ -->
+    <aside class="sidebar right" id="rightPanel" aria-label="Property information">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="property" role="tab">Property</button>
+        <button class="tab" data-tab="shortlist" role="tab">Shortlist <span class="pill" id="shortlistCount">0</span></button>
+      </div>
+
+      <div class="tab-body" id="tab-property">
+        <div class="empty-state" id="propertyEmpty">
+          <svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><path d="M24 4c-7.7 0-14 6.1-14 13.7C10 28 24 44 24 44s14-16 14-26.3C38 10.1 31.7 4 24 4z" fill="none" stroke="currentColor" stroke-width="2.5"/><circle cx="24" cy="18" r="5" fill="none" stroke="currentColor" stroke-width="2.5"/></svg>
+          <h3>No property selected</h3>
+          <p>Turn on a property layer (for example <strong>DLBA-Owned Properties</strong> or <strong>Parcel Boundaries</strong>), zoom in, and click a parcel.</p>
+          <p class="muted small">Only information from connected datasets is shown. Anything not in the data is marked as unavailable.</p>
+        </div>
+        <div id="propertyContent" hidden></div>
+      </div>
+
+      <div class="tab-body" id="tab-shortlist" hidden>
+        <div class="shortlist-actions">
+          <button class="btn small" id="exportCsv">Export CSV</button>
+          <button class="btn small" id="exportJson">Export JSON</button>
+          <label class="btn small file-btn">Import JSON<input type="file" id="importJson" accept=".json,application/json"></label>
+          <button class="link-btn danger" id="clearShortlist">Clear all</button>
+        </div>
+        <p class="muted small">Saved in this browser only. Export the list to share it with your team.</p>
+        <ol class="shortlist" id="shortlist"></ol>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ============ DATA SOURCES DIALOG ============ -->
+  <dialog id="sourcesDialog" class="dialog">
+    <div class="dialog-head">
+      <h2>Data sources</h2>
+      <button class="icon-btn" id="closeSources" aria-label="Close">✕</button>
+    </div>
+    <p class="muted small">Every dataset used by the map, where it comes from, and when it was retrieved. Edit <code>config/layers.js</code> to connect or update a dataset.</p>
+    <div class="table-scroll"><table class="sources-table" id="sourcesTable"></table></div>
+    <div class="dialog-foot">
+      <button class="btn small" id="exportSources">Download source log (CSV)</button>
+    </div>
+  </dialog>
+
+  <script src="lib/leaflet/leaflet.js"></script>
+  <script src="config/layers.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
