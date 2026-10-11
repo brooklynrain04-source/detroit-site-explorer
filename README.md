@@ -4,10 +4,10 @@ An interactive GIS map for exploring potential LIHTC development sites in Detroi
 **2026 Corcoran Center Case Competition**. It is built with Leaflet, HTML, CSS and plain JavaScript.
 There is no build step and nothing to install.
 
-> **Status (2026-10-10):** 23 of 26 layers are connected to live, official data services
-> (City of Detroit, HUD, SEMCOG and FEMA). Every service was checked in a browser for access,
-> field names, record counts and paging. Sidewalks, Brownfield Sites and Former Industrial
-> Land Uses are still **Not Connected** because no source has been chosen yet. The map never
+> **Status (2026-10-11):** 31 of 33 layers are connected to live, official data services
+> (City of Detroit, HUD, SEMCOG, U.S. DOT and FEMA). Every service was checked in a browser for access,
+> field names, record counts and paging. Brownfield Sites and Former Industrial Land Uses
+> are still **Not Connected** because no source has been chosen yet. The map never
 > draws placeholder or invented data.
 
 ## Connected data sources (retrieved 2026-10-10)
@@ -17,6 +17,7 @@ There is no build step and nothing to install.
 | DLBA-Owned Properties | DLBA Owned Properties · City of Detroit Open Data / DLBA | all 56,760 points load citywide (a few seconds), colored **lot** vs **structure** |
 | Vacant Lots | Parcels (Current) where `is_improved = 0` · Assessor | ≈150,700 parcels with no recorded improvements (any owner) |
 | Vacant Property Registrations | BSEED Vacant Property Registrations | 1,516 registered vacant properties (mostly buildings) |
+| DLBA Commercial & Industrial Parcels | Parcels (Current), DLBA-owned commercial or industrial class · Assessor | about 64 commercial and 4 industrial **buildings**, plus about 990 commercial/industrial lots. Good for adaptive reuse |
 | Parcel Boundaries | Parcels (Current) · Office of the Assessor | ≈377,900 parcels: owner, sq ft, zoning, class, tract, FEMA zone |
 | Existing Building Footprints | Buildings (Base Units) · City of Detroit | last edited 2025-04-22 |
 | Property Ownership | Parcels (Current), public taxpayers only | DLBA / City / other land banks / State, color-coded |
@@ -25,9 +26,14 @@ There is no build step and nothing to install.
 | QCT 2026 | Qualified Census Tracts 2026 · HUD | Wayne County tracts |
 | DDA 2026 | Difficult Development Areas 2026 · HUD | Detroit-Warren-Livonia ZIP-based DDAs |
 | TMFHA | 2024 Targeted Multifamily Areas · City of Detroit HRD | 8 areas |
+| Highways & major roads / Collector & local streets | Roads (Michigan Geographic Framework v22) · SEMCOG | colored and sized by federal road class (Interstate → local street) |
+| Traffic volume | Traffic Volume (2025 release) · SEMCOG | cars per day on major roads. Many counts are from 2010–2018 |
+| Posted speed limits | Traffic Volume (2025 release), posted speed field · SEMCOG | major roads only, colored 25 mph → 60+ mph |
 | Bus Routes / Bus Stops | DDOT Bus Routes / DDOT Bus Stops | 82 routes, 5,098 stops |
 | Bicycle Lanes / Protected / Shared-Use Paths | Bike Lanes (bike routes & facilities) · City of Detroit | split by `on_road_type` |
 | Greenways | City of Detroit Greenways · GSD | existing and planned segments |
+| Sidewalks & Crosswalks | Sidewalks and Crosswalks · SEMCOG (2019 imagery, updated quarterly) | zoom 16+. Shows where sidewalks exist, not their condition |
+| Railroads (in use / no longer in use) | North American Rail Network Lines · U.S. DOT BTS / FRA (updated 2026-07-21) | split by the FRA status code. The federal data lists only about 15 inactive segments near Detroit, so many old corridors are missing |
 | Grocery Stores | Grocery Stores (SE Michigan, 2024) · SEMCOG | 523 stores |
 | Schools | Primary and Secondary Schools · City of Detroit | 203 schools |
 | Parks | City Parks · City of Detroit | 302 parks |
@@ -69,10 +75,10 @@ needs to change.
 | **Legend** | Bottom of the left panel. Shows only the layers that are switched on. |
 | **Detroit only** | Checkbox in the top bar. Covers the base map outside the official City of Detroit Boundary, including the enclaves of Hamtramck and Highland Park. Data layers still draw on top, so a grocery store just over the city line stays visible. Untick it to see the surrounding area. |
 | **Map** | Scroll to zoom, drag to pan (panning stays near Detroit). **⌂** or **Reset view** returns to all of Detroit. Large layers such as parcels only load once you zoom in, and a badge tells you the zoom level needed. |
-| **Click a parcel** | Highlights it and fills in the **Property** tab on the right. |
+| **Click a parcel** | Highlights it and fills in the **Property** tab on the right. The panel shows the site's **exact coordinates** (with a Copy button) and buttons that open the spot in **Google Maps satellite, Street View and Google Earth**. To unselect, click it again, click **✕** or **Clear selection** in the panel, or press **Esc**. |
 | **Distance ring** | Off, ¼ mile, ½ mile or 1 mile, measured as a straight line from the site center (not walking distance). Nearby transit and amenities are listed within the ring. |
 | **Shortlist tab** | **+ Add to shortlist** saves the selected site. Add notes, then **Export CSV / JSON** to share. **Import JSON** merges a teammate's list. The shortlist is saved in your browser only (there is no shared database). |
-| **Search** | Searches address or parcel ID in the connected property layers. |
+| **Search** | Type an address, neighborhood, place name (park, school, hospital, clinic, grocery store) or parcel ID. Results are grouped: neighborhoods, places on the map, properties, then any address or landmark from the Esri World Geocoder. **Enter** opens the top result. Street words like "St" or "Ave" are optional. |
 | **Data sources** | Table of every dataset with its URL, retrieval date and status. **Download source log (CSV)** helps with citations and the AI Log. |
 
 ### What the Property panel reports, and how

@@ -52,14 +52,19 @@ window.MAP_CONFIG = {
     maxZoom: 20
   },
 
+  /* Search box. Neighborhoods / places come from layers marked searchable: true;
+     properties from the property layers; anything else from this geocoder. */
+  search: {
+    geocoder: { url: "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer", label: "Esri World Geocoder", minScore: 80 }
+  },
+
   /* Official city limits. Everything outside them is covered on the base map
      ("Detroit only" checkbox in the top bar) and panning is kept near the city. */
   cityBoundary: {
     url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/City_of_Detroit_Boundary/FeatureServer/0",
     dataset: "City of Detroit Boundary", publisher: "City of Detroit (data.detroitmi.gov)", retrieved: "2026-10-10",
     maskColor: "#f8f9fb",   // color of the area outside Detroit
-    maskOpacity: 1,         // 1 = completely hidden, 0.8 = faintly visible
-    panPadding: 0.35        // how far past the city edge you can pan (fraction of city size)
+    maskOpacity: 1          // 1 = completely hidden, 0.8 = faintly visible
   },
 
   /* Background maps. Esri tiles are used because they also work when
@@ -113,6 +118,7 @@ window.MAP_CONFIG = {
     landUse:     ["use_code_description", "land_use"],
     buildings:   ["num_buildings"],
     yearBuilt:   ["year_built"],
+    floorArea:   ["total_floor_area"],
     taxStatus:   ["tax_status_description"],
     neighborhood:["neighborhood", "nhood_name"],
     district:    ["council_district"],
@@ -123,6 +129,17 @@ window.MAP_CONFIG = {
 
   /* Friendly labels for coded values (column -> value -> label). */
   valueLabels: {
+    SPEEDSOURC: { TCO: "Traffic Control Order", MSP: "Michigan State Police", COG: "SEMCOG", " ": "Not recorded" },
+    nfc: {   // National Functional Classification (road class)
+      "0": "Not classified", "1": "Interstate", "2": "Other freeway / expressway", "3": "Other principal arterial",
+      "4": "Minor arterial", "5": "Major collector", "6": "Minor collector", "7": "Local street"
+    },
+    NET: {   // Federal Railroad Administration rail network codes
+      M: "Main line (active)", I: "Major industrial lead (active)", O: "Other track / minor industrial lead (active)",
+      S: "Passing siding (active)", Y: "Yard track (active)", F: "Rail ferry connection (active)",
+      Z: "Transit-only or museum/tourist rail", X: "Out of service", A: "Abandoned",
+      R: "Abandoned — tracks physically removed", T: "Trail on former rail right-of-way"
+    },
     is_improved: {
       "0": "Not improved (Assessor: no buildings/improvements recorded)",
       "1": "Improved (Assessor: buildings/improvements recorded)"
@@ -223,6 +240,21 @@ window.MAP_CONFIG = {
           note: "Properties whose owners registered them with BSEED as vacant (2019–present). These are mostly vacant buildings, not vacant land."
         },
         {
+          id: "dlbanonres", typesOpen: true, name: "DLBA Commercial & Industrial Parcels", role: "property", geometry: "polygon",
+          source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/parcel_file_current/FeatureServer/0",
+                    loadMode: "all",
+                    where: "taxpayer_1 LIKE 'DETROIT LAND BAN%' AND (property_class_description LIKE 'COMMERCIAL%' OR property_class_description LIKE 'INDUSTRIAL%')" },
+          nameField: "address", typeField: "use_code_description",
+          colorBy: { field: "property_class_description", rules: [
+            { match: "^INDUSTRIAL-IMPROVED$", color: "#4c1d95", fillColor: "#7c3aed", label: "Industrial building" },
+            { match: "^COMMERCIAL-IMPROVED$", color: "#1e3a8a", fillColor: "#2563eb", label: "Commercial building (stores, walk-up apartments, offices…)" },
+            { match: "^INDUSTRIAL-VACANT$", color: "#6d28d9", fillColor: "#ddd6fe", label: "Industrial land, no building" },
+            { match: "^COMMERCIAL-VACANT$", color: "#1d4ed8", fillColor: "#bfdbfe", label: "Commercial land, no building" } ] },
+          style: { color: "#1e3a8a", fillColor: "#2563eb", weight: 2, fillOpacity: 0.75 },
+          visible: false, dataset: "Parcels (Current) — DLBA-owned, commercial or industrial property class", publisher: "City of Detroit Office of the Assessor", retrieved: "2026-10-11",
+          note: "About 1,055 DLBA-owned parcels the Assessor classes as commercial or industrial (about 64 commercial and 4 industrial buildings; the rest are land). 'Improved' means the Assessor records a building — it may still be vacant, damaged or since demolished, so check satellite imagery. Former commercial/industrial use adds $25,000 environmental cost in the case."
+        },
+        {
           id: "parcels", name: "Parcel Boundaries", role: "parcels", geometry: "polygon",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/parcel_file_current/FeatureServer/0",
                     loadMode: "viewport", minZoom: 16, where: "1=1" },
@@ -262,7 +294,7 @@ window.MAP_CONFIG = {
           note: "28,316 polygons; loads for the area on screen at zoom 15+ (outlines lightly simplified for display only; site lookups use exact shapes). Uses the ZONING_REV code and ZDESCR_N description. Confirm by-right multifamily uses in Chapter 50 / the 2025 'Let's Build More Housing' amendment."
         },
         {
-          id: "neighborhoods", name: "Neighborhood Boundaries", role: "context", geometry: "polygon",
+          id: "neighborhoods", searchable: true, isNeighborhood: true, name: "Neighborhood Boundaries", role: "context", geometry: "polygon",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/Current_City_of_Detroit_Neighborhoods/FeatureServer/0",
                     loadMode: "all", where: "1=1" },
           nameField: "nhood_name",
@@ -309,6 +341,66 @@ window.MAP_CONFIG = {
     {
       id: "transport", name: "Transportation & Accessibility", open: false,
       layers: [
+        {
+          id: "roadsmajor", name: "Highways & major roads (road class)", role: "transit", geometry: "line",
+          source: { type: "arcgis", url: "https://gis.semcog.org/server/rest/services/Hosted/Roads_2022/FeatureServer/69",
+                    loadMode: "all", where: "nfc >= 1 AND nfc <= 4", bbox: [-83.31, 42.24, -82.89, 42.47],
+                    outFields: "objectid,road_name,strname2,nfc,nhs,fedaid" },
+          nameField: "road_name", typeField: "nfc",
+          colorBy: { field: "nfc", rules: [
+            { match: "^1$", color: "#7f1d1d", weight: 5, label: "Interstate" },
+            { match: "^2$", color: "#dc2626", weight: 4, label: "Other freeway / expressway" },
+            { match: "^3$", color: "#ea580c", weight: 3.2, label: "Principal arterial (main roads, e.g. Woodward, Gratiot)" },
+            { match: "^4$", color: "#d97706", weight: 2.2, label: "Minor arterial" } ] },
+          style: { color: "#ea580c", weight: 3, opacity: 0.85 },
+          visible: false, dataset: "Roads (Michigan Geographic Framework v22) — National Functional Classification 1–4", publisher: "SEMCOG", retrieved: "2026-10-11",
+          note: "Federal road classes from SEMCOG's 2022 road network. Arterials carry the most traffic and buses; a site on an arterial has visibility and transit access but more noise. About 15,200 segments, loaded citywide."
+        },
+        {
+          id: "roadslocal", name: "Collector & local streets (road class)", role: "context", geometry: "line",
+          source: { type: "arcgis", url: "https://gis.semcog.org/server/rest/services/Hosted/Roads_2022/FeatureServer/69",
+                    loadMode: "viewport", minZoom: 15, where: "nfc >= 5", outFields: "objectid,road_name,nfc" },
+          nameField: "road_name", typeField: "nfc",
+          colorBy: { field: "nfc", rules: [
+            { match: "^(5|6)$", color: "#a16207", weight: 1.8, label: "Collector (links neighborhoods to arterials)" },
+            { match: "^7$", color: "#94a3b8", weight: 1.1, label: "Local street (least traffic)" } ] },
+          style: { color: "#94a3b8", weight: 1.2, opacity: 0.9 },
+          visible: false, dataset: "Roads (Michigan Geographic Framework v22) — National Functional Classification 5–7", publisher: "SEMCOG", retrieved: "2026-10-11",
+          note: "Quieter streets. About 34,500 segments; loads for the area on screen at zoom 15+."
+        },
+        {
+          id: "traffic", name: "Traffic volume (cars per day)", role: "context", geometry: "line",
+          source: { type: "arcgis", url: "https://services1.arcgis.com/xUx8EjNc6egUPYWh/arcgis/rest/services/trafficvolume_esri_2025/FeatureServer/0",
+                    loadMode: "all", where: "AADT > 0", bbox: [-83.31, 42.24, -82.89, 42.47],
+                    outFields: "FID,ROADNAME,AADT,AADTYEAR,AADTTYPE,NFC,NUMBERLANE,POSTEDSPEE,COND,JURISDICTI" },
+          nameField: "ROADNAME", typeField: "AADT",
+          colorBy: { field: "AADT", rules: [
+            { min: 0, max: 5000, color: "#a3e635", weight: 1.6, label: "Under 5,000 / day" },
+            { min: 5000, max: 15000, color: "#facc15", weight: 2.2, label: "5,000 – 15,000" },
+            { min: 15000, max: 30000, color: "#fb923c", weight: 3, label: "15,000 – 30,000" },
+            { min: 30000, max: 60000, color: "#ef4444", weight: 3.8, label: "30,000 – 60,000" },
+            { min: 60000, color: "#7f1d1d", weight: 4.6, label: "60,000 + (freeways)" } ] },
+          style: { color: "#fb923c", weight: 2.5, opacity: 0.9 },
+          visible: false, dataset: "Traffic Volume (2025 release)", publisher: "SEMCOG", retrieved: "2026-10-11",
+          note: "Average annual daily traffic (AADT) on major roads only — local streets are not counted. Despite the 2025 release, most counts in Detroit were taken 2010–2018 and about 1,200 segments have no count year (AADTYEAR 0); many are interpolated. Use it to compare busy vs quiet roads, not as current figures. About 8,600 segments."
+        },
+        {
+          id: "speed", name: "Posted speed limits", role: "context", geometry: "line",
+          source: { type: "arcgis", url: "https://services1.arcgis.com/xUx8EjNc6egUPYWh/arcgis/rest/services/trafficvolume_esri_2025/FeatureServer/0",
+                    loadMode: "all", where: "POSTEDSPEE > 0", bbox: [-83.31, 42.24, -82.89, 42.47],
+                    outFields: "FID,ROADNAME,POSTEDSPEE,SPEEDSOURC,NFC,NUMBERLANE,JURISDICTI" },
+          nameField: "ROADNAME", typeField: "POSTEDSPEE",
+          colorBy: { field: "POSTEDSPEE", rules: [
+            { min: 0, max: 26, color: "#16a34a", weight: 1.8, label: "25 mph or less" },
+            { min: 26, max: 31, color: "#84cc16", weight: 2.2, label: "30 mph" },
+            { min: 31, max: 36, color: "#eab308", weight: 2.6, label: "35 mph" },
+            { min: 36, max: 46, color: "#f97316", weight: 3, label: "40–45 mph" },
+            { min: 46, max: 56, color: "#dc2626", weight: 3.6, label: "50–55 mph" },
+            { min: 56, color: "#7f1d1d", weight: 4.4, label: "60 mph + (freeways)" } ] },
+          style: { color: "#eab308", weight: 2.5, opacity: 0.9 },
+          visible: false, dataset: "Traffic Volume (2025 release) — posted speed field", publisher: "SEMCOG", retrieved: "2026-10-11",
+          note: "Posted speed limits on major roads (about 8,300 segments). Sources per segment: Traffic Control Orders, Michigan State Police, or SEMCOG (see SPEEDSOURC in the pop-up). Local residential streets are not in this dataset. Speed limits change; confirm on site-specific work."
+        },
         {
           id: "busroutes", name: "Bus Routes (DDOT)", role: "transit", geometry: "line",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/DDOT_Bus_Routes/FeatureServer/0",
@@ -362,10 +454,44 @@ window.MAP_CONFIG = {
           note: "Off-road paths shared by pedestrians and cyclists. No separate pedestrian-only path dataset was provided."
         },
         {
-          id: "sidewalks", name: "Sidewalks", role: "context", geometry: "line",
-          source: { type: "", url: "", loadMode: "viewport", minZoom: 16, where: "1=1" },
-          style: { color: "#9ca3af", weight: 1.2, opacity: 0.9 },
-          visible: false, dataset: "", publisher: "", retrieved: ""
+          id: "railactive", name: "Railroads — in use", role: "transit", geometry: "line",
+          source: { type: "arcgis", url: "https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/NTAD_North_American_Rail_Network_Lines/FeatureServer/0",
+                    loadMode: "all", where: "NET IN ('M','I','O','S','Y','F','Z')", bbox: [-83.31, 42.24, -82.89, 42.47] },
+          nameField: ["SUBDIV", "BRANCH", "YARDNAME", "RROWNER1"], namePrefix: "Rail: ", typeField: "NET",
+          colorBy: { field: "NET", rules: [
+            { match: "^M$", color: "#1f2937", label: "Main line" },
+            { match: "^(I|O|S|F)$", color: "#6b7280", label: "Industrial lead / siding / other track" },
+            { match: "^Y$", color: "#9ca3af", label: "Rail yard track" } ],
+            otherwise: { color: "#7c3aed", label: "Transit / museum rail" } },
+          style: { color: "#1f2937", weight: 2.5, opacity: 0.9 },
+          visible: false, dataset: "North American Rail Network (NARN) Rail Lines", publisher: "U.S. DOT Bureau of Transportation Statistics / Federal Railroad Administration", retrieved: "2026-10-11",
+          note: "Active rail segments around Detroit (FRA 'NET' codes M, I, O, S, Y, F, Z), updated by FRA on 2026-07-21. Useful for noise, vibration and safety-setback screening."
+        },
+        {
+          id: "railinactive", name: "Railroads — no longer in use", role: "transit", geometry: "line",
+          source: { type: "arcgis", url: "https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services/NTAD_North_American_Rail_Network_Lines/FeatureServer/0",
+                    loadMode: "all", where: "NET IN ('X','A','R','T')", bbox: [-83.31, 42.24, -82.89, 42.47] },
+          nameField: ["SUBDIV", "BRANCH", "RROWNER1"], namePrefix: "Former rail: ", typeField: "NET",
+          colorBy: { field: "NET", rules: [
+            { match: "^X$", color: "#d97706", label: "Out of service (tracks in place)" },
+            { match: "^(A|R)$", color: "#b91c1c", label: "Abandoned / tracks removed" },
+            { match: "^T$", color: "#65a30d", label: "Converted to trail" } ] },
+          style: { color: "#b91c1c", weight: 3, opacity: 0.95, dashArray: "6 5" },
+          visible: false, dataset: "North American Rail Network (NARN) Rail Lines", publisher: "U.S. DOT Bureau of Transportation Statistics / Federal Railroad Administration", retrieved: "2026-10-11",
+          note: "Segments FRA codes as out of service (X), abandoned (A), abandoned and removed (R) or trail (T). In and around Detroit the federal data lists only about 15 short inactive segments (mostly 'tracks removed'), so many older abandoned corridors are NOT shown here. Former rail corridors can mean soil contamination: treat any site on or next to one as needing a closer Phase I review."
+        },
+        {
+          id: "sidewalks", name: "Sidewalks & Crosswalks", role: "context", geometry: "line",
+          source: { type: "arcgis", url: "https://gis.semcog.org/server/rest/services/Hosted/Sidewalks_and_Crosswalks/FeatureServer/24",
+                    loadMode: "viewport", minZoom: 16, where: "1=1", outFields: "objectid,catetitle,width_ft" },
+          nameField: "catetitle", typeField: "width_ft",
+          colorBy: { field: "catetitle", rules: [
+            { match: "^sidewalk$", color: "#6b7280", label: "Sidewalk" },
+            { match: "^crosswalk", color: "#2563eb", label: "Crosswalk (marked or painted)" },
+            { match: "independent path", color: "#0891b2", label: "Independent path" } ] },
+          style: { color: "#6b7280", weight: 1.6, opacity: 0.9 },
+          visible: false, dataset: "Sidewalks and Crosswalks (Southeast Michigan)", publisher: "SEMCOG", retrieved: "2026-10-11",
+          note: "Sidewalk and crosswalk centerlines traced by SEMCOG from aerial imagery (created 2019, updated quarterly). About 297,000 segments in the Detroit area; loads for the area on screen at zoom 16+. A mapped sidewalk is not a condition rating — check imagery or the City's Sidewalk Reporter for broken or missing segments. Use is subject to SEMCOG's copyright license agreement."
         }
       ]
     },
@@ -374,7 +500,7 @@ window.MAP_CONFIG = {
       id: "amenities", name: "Community Amenities", open: false,
       layers: [
         {
-          id: "grocery", name: "Grocery Stores (SEMCOG)", role: "amenity", geometry: "point", icon: "grocery",
+          id: "grocery", searchable: true, name: "Grocery Stores (SEMCOG)", role: "amenity", geometry: "point", icon: "grocery",
           source: { type: "arcgis", url: "https://gis.semcog.org/server/rest/services/Hosted/Grocery_Stores/FeatureServer/87",
                     loadMode: "all", where: "1=1" },
           nameField: "name",
@@ -383,7 +509,7 @@ window.MAP_CONFIG = {
           note: "523 full-service grocery stores across Southeast Michigan, built by SEMCOG in 2024 from OpenStreetMap and reviewed for a full range of fresh food. Name only — no addresses."
         },
         {
-          id: "schools", name: "Schools", role: "amenity", geometry: "point", icon: "school",
+          id: "schools", searchable: true, name: "Schools", role: "amenity", geometry: "point", icon: "school",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/Primary_and_Secondary_Schools/FeatureServer/0",
                     loadMode: "all", where: "1=1" },
           nameField: "ENTITY_NAME", addressField: "ADDRESS", typeField: "ENTITY_TYPE",
@@ -392,7 +518,7 @@ window.MAP_CONFIG = {
           note: "203 open-active schools with grade levels and school type."
         },
         {
-          id: "parks", name: "Parks", role: "amenity", geometry: "polygon", icon: "park",
+          id: "parks", searchable: true, name: "Parks", role: "amenity", geometry: "polygon", icon: "park",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/city_parks/FeatureServer/0",
                     loadMode: "all", where: "1=1" },
           nameField: "park_name", addressField: "address", typeField: "park_type",
@@ -401,7 +527,7 @@ window.MAP_CONFIG = {
           note: "302 City-owned parks. Distance is measured to the nearest park edge."
         },
         {
-          id: "hospitals", name: "Hospitals", role: "amenity", geometry: "point", icon: "hospital",
+          id: "hospitals", searchable: true, name: "Hospitals", role: "amenity", geometry: "point", icon: "hospital",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/Hospitals/FeatureServer/0",
                     loadMode: "all", where: "1=1" },
           nameField: "Name", addressField: "Address",
@@ -410,7 +536,7 @@ window.MAP_CONFIG = {
           note: "9 hospitals. This City layer was last edited in 2018, so verify that each hospital is still operating."
         },
         {
-          id: "clinics", name: "Community Health Clinics (FQHCs)", role: "amenity", geometry: "point", icon: "clinic",
+          id: "clinics", searchable: true, name: "Community Health Clinics (FQHCs)", role: "amenity", geometry: "point", icon: "clinic",
           source: { type: "arcgis", url: "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services/Federally_Qualified_Health_Centers/FeatureServer/0",
                     loadMode: "all", where: "1=1", coordsFromField: "Location_1" },
           nameField: "NAME", addressField: "Location_1",

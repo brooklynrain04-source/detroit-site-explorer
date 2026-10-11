@@ -105,7 +105,16 @@
   function ruleFor(rt, f) {
     const cb = rt.cfg.colorBy; if (!cb) return null;
     const v = (f.properties || {})[findKey(f.properties, asList(cb.field)) || ''];
-    for (const r of cb.rules) { if (r._re === undefined) r._re = new RegExp(r.match, 'i'); if (!isBlank(v) && r._re.test(String(v))) return r; }
+    if (isBlank(v)) return cb.otherwise || null;
+    for (const r of cb.rules) {
+      if (r.min != null || r.max != null) {           // numeric range rule: min <= value < max
+        const n = Number(v);
+        if (isFinite(n) && (r.min == null || n >= r.min) && (r.max == null || n < r.max)) return r;
+        continue;
+      }
+      if (r._re === undefined) r._re = new RegExp(r.match, 'i');
+      if (r._re.test(String(v))) return r;
+    }
     return cb.otherwise || null;
   }
   function debounce(fn, ms) {
@@ -438,12 +447,13 @@
     const pageSize = Math.min(meta.maxRecordCount || 1000, 2000);
     const canPage = !(meta.advancedQueryCapabilities && meta.advancedQueryCapabilities.supportsPagination === false);
     const oid = meta.objectIdField || (meta.uniqueIdField && meta.uniqueIdField.name) || ((meta.fields || []).find(f => f.type === 'esriFieldTypeOID') || {}).name;
+    const area = rt.cfg.source.bbox ? envelopeParams(rt.cfg.source.bbox) : {};   // optional: only this area of a big layer
     let total = null;
     try {
-      const c = await fetchJson(rt.url + '/query?' + new URLSearchParams({ where: rt.cfg.source.where || '1=1', returnCountOnly: 'true', f: 'json' }));
+      const c = await fetchJson(rt.url + '/query?' + new URLSearchParams({ where: rt.cfg.source.where || '1=1', returnCountOnly: 'true', f: 'json', ...area }));
       if (typeof c.count === 'number') total = c.count;
     } catch (e) { /* fall back below */ }
-    if (!canPage || !oid || total == null || total <= pageSize) return arcgisQueryAll(rt, {}, cap, undefined, onProgress);
+    if (!canPage || !oid || total == null || total <= pageSize) return arcgisQueryAll(rt, area, cap, undefined, onProgress);
     const offsets = [];
     for (let o = 0; o < Math.min(total, cap); o += pageSize) offsets.push(o);
     const pages = new Array(offsets.length);
@@ -451,7 +461,7 @@
     const worker = async () => {
       while (next < offsets.length) {
         const i = next++;
-        const r = await arcgisQueryPage(rt, { resultOffset: offsets[i], resultRecordCount: pageSize, orderByFields: oid });
+        const r = await arcgisQueryPage(rt, { ...area, resultOffset: offsets[i], resultRecordCount: pageSize, orderByFields: oid });
         pages[i] = r.features; loaded += r.features.length;
         if (onProgress) onProgress(loaded);
       }
@@ -598,6 +608,7 @@
       rt.note = res.truncated ? 'Showing the first ' + fmtInt(res.features.length) + ' features in view — zoom in to see all.' : '';
       rt.inView = res.features.length;
       rt.group.addData(fresh);
+      updateClassCounts(rt);
       applyLayerOpacity(rt);
       setStatus(rt, 'ok');
       scheduleRestack();
@@ -653,7 +664,11 @@
     }
   });
   map.addControl(new ResetCtl());
-  function resetView() { map.setView(CFG.map.center, CFG.map.zoom); }
+  let cityBounds = null;   // set once the official boundary loads
+  function resetView() {
+    if (cityBounds) map.fitBounds(cityBounds, { padding: [16, 16] });
+    else map.setView(CFG.map.center, CFG.map.zoom);
+  }
 
   // Base maps
   const basemapLayers = {};
@@ -696,9 +711,11 @@
       maskLayer = L.polygon(rings, { renderer: svgMask, interactive: false, stroke: false, fillColor: cb.maskColor || '#f8f9fb', fillOpacity: cb.maskOpacity != null ? cb.maskOpacity : 1, fillRule: 'evenodd' });
       cityOutline = L.polygon(polys.map(p => p.map(toLL)), { renderer: svgMask, interactive: false, fill: false, color: cb.outlineColor || '#334155', weight: 1.6, opacity: 0.9 });
       const b = L.latLngBounds(polys.flatMap(p => toLL(p[0])));
-      map.setMaxBounds(b.pad(cb.panPadding != null ? cb.panPadding : 0.35));
-      map.options.maxBoundsViscosity = 0.8;
-      map.setMinZoom(Math.max(CFG.map.minZoom || 0, map.getBoundsZoom(b) - 1));
+      cityBounds = b;
+      // Panning is left free (a hard pan limit made the map snap back while dragging);
+      // only zooming far out past the city is prevented.
+      map.setMinZoom(Math.max(CFG.map.minZoom || 0, map.getBoundsZoom(b) - 2));
+      if (!state.userMoved) resetView();
       setMask($('#maskToggle') ? $('#maskToggle').checked : true);
     } catch (e) {
       console.warn('City boundary mask not loaded:', e.message);
@@ -743,7 +760,7 @@
   function styleFor(rt, f) {
     const st = baseStyle(rt);
     const rule = ruleFor(rt, f);
-    if (rule) { st.color = rule.color || st.color; st.fillColor = rule.fillColor || rule.color || st.fillColor; }
+    if (rule) { st.color = rule.color || st.color; st.fillColor = rule.fillColor || rule.color || st.fillColor; if (rule.weight != null) st.weight = rule.weight; }
     if (rt.cfg.isZoning) {
       const code = zoningCodeOf(f);
       st.fillColor = code ? zoningColor(code) : '#cccccc';
@@ -755,7 +772,7 @@
   function makeGroup(rt) {
     const g = L.geoJSON(null, {
       style: f => styleFor(rt, f),
-      filter: f => !rt.cfg.isZoning || state.zoning.active.has(zoningCodeOf(f)),
+      filter: f => (!rt.cfg.isZoning || state.zoning.active.has(zoningCodeOf(f))) && classVisible(rt, f),
       pointToLayer: (f, latlng) => {
         if (rt.cfg.icon) return L.marker(latlng, { icon: amenityIcon(rt.cfg.icon, rt.cfg.style.color), keyboard: false });
         const s = rt.cfg.style || {}, rule = ruleFor(rt, f) || {};
@@ -776,6 +793,59 @@
     if (rt.features) rt.group.addData(rt.features);
     applyLayerOpacity(rt);
     scheduleRestack();
+    updateClassCounts(rt);
+  }
+
+  /* ---------- type checkboxes for color-coded layers (colorBy) ---------- */
+  const OTHER_CLASS = '(unclassified)';
+  function classKey(rt, f) { const r = ruleFor(rt, f); return r ? r.label : OTHER_CLASS; }
+  function classVisible(rt, f) { return !rt.hiddenClasses || !rt.hiddenClasses.size || !rt.hiddenClasses.has(classKey(rt, f)); }
+  function classList(rt) {
+    const cb = rt.cfg.colorBy; if (!cb) return [];
+    return cb.rules.concat(cb.otherwise ? [cb.otherwise] : []);
+  }
+  function ruleSwatch(rt, r) {
+    if (rt.cfg.geometry === 'point') return '<span class="swatch point" style="background:' + esc(r.fillColor || r.color) + ';border:1.5px solid ' + esc(r.color) + '"></span>';
+    if (rt.cfg.geometry === 'line') return '<span class="swatch line" style="border-top-color:' + esc(r.color) + ';border-top-width:' + Math.max(2, Math.min(6, r.weight || 3)) + 'px;border-top-style:' + (rt.cfg.style.dashArray ? 'dashed' : 'solid') + '"></span>';
+    return '<span class="swatch" style="background:' + esc(r.fillColor || r.color) + ';border:1.5px solid ' + esc(r.color) + '"></span>';
+  }
+  function updateClassCounts(rt) {
+    const box = $('#classes-' + rt.cfg.id); if (!box || !rt.features) return;
+    const counts = {};
+    for (const f of rt.features) { const k = classKey(rt, f); counts[k] = (counts[k] || 0) + 1; }
+    box.querySelectorAll('input[data-cls]').forEach(inp => {
+      const n = inp.closest('.zcode').querySelector('.zc-n');
+      if (n) n.textContent = fmtInt(counts[inp.dataset.cls] || 0);
+    });
+    const other = box.querySelector('.cls-other');
+    if (other) other.hidden = !counts[OTHER_CLASS];
+    if (other && counts[OTHER_CLASS]) other.querySelector('.zc-n').textContent = fmtInt(counts[OTHER_CLASS]);
+  }
+  function classTreeHtml(rt) {
+    const list = classList(rt);
+    if (!list.length) return '';
+    const row = (key, label, sw, extraCls) => '<label class="zcode' + (extraCls ? ' ' + extraCls : '') + '"' + (extraCls ? ' hidden' : '') + '><input type="checkbox" data-cls="' + esc(key) + '" checked>' + sw +
+      '<span class="zc-label">' + esc(label) + '</span><span class="zc-n" title="features loaded"></span></label>';
+    return '<details class="zgroup classes" id="classes-' + rt.cfg.id + '"' + (rt.cfg.typesOpen ? ' open' : '') + '><summary>Show types <span class="muted small">(' + list.length + ')</span>' +
+      '<span class="zg-actions"><button class="link-btn" data-act="all">all</button><button class="link-btn" data-act="none">none</button></span></summary>' +
+      list.map(r => row(r.label, r.label, ruleSwatch(rt, r))).join('') +
+      row(OTHER_CLASS, 'Other / not classified', '<span class="swatch" style="background:' + esc((rt.cfg.style || {}).fillColor || (rt.cfg.style || {}).color) + '"></span>', 'cls-other') +
+      '</details>';
+  }
+  function wireClassTree(rt, row) {
+    const box = row.querySelector('#classes-' + rt.cfg.id); if (!box) return;
+    rt.hiddenClasses = rt.hiddenClasses || new Set();
+    const apply = () => {
+      rt.hiddenClasses = new Set(Array.from(box.querySelectorAll('input[data-cls]')).filter(i => !i.checked).map(i => i.dataset.cls));
+      if (rt.on) renderLayer(rt);
+      buildLegend();
+    };
+    box.querySelectorAll('input[data-cls]').forEach(i => i.addEventListener('change', apply));
+    box.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation();
+      box.querySelectorAll('input[data-cls]').forEach(i => i.checked = b.dataset.act === 'all');
+      apply();
+    }));
   }
   function applyLayerOpacity(rt) {
     if (rt.cfg.geometry !== 'polygon') return;
@@ -834,6 +904,7 @@
     state.order.map(id => state.rt[id]).filter(rt => rt.on && isViewport(rt)).forEach(loadViewport);
   }, 350);
   map.on('moveend', reloadViewportLayers);
+  map.on('dragstart zoomstart', e => { if (e.hard !== false) state.userMoved = true; });
 
   function updateMapHints() {
     const need = state.order.map(id => state.rt[id]).filter(rt => rt.on && isViewport(rt) && map.getZoom() < (rt.cfg.source.minZoom || 0));
@@ -862,7 +933,7 @@
       title = featureName(p, rt.cfg.name, rt);
       const typeKey = pick(p, asList(rt.cfg.typeField).concat(['type', 'category', 'facility_type', 'facilitytype', 'school_type', 'subtype', 'fld_zone']));
       const rule = ruleFor(rt, f);
-      sub = rt.cfg.name + (typeKey ? ' · ' + typeKey.value : (rule && rule.label ? ' · ' + rule.label : ''));
+      sub = rt.cfg.name + (typeKey ? ' · ' + valueLabel(typeKey.key, typeKey.value) : (rule && rule.label ? ' · ' + rule.label : ''));
     }
     const addr = featureAddress(p, rt);
     const rows = Object.keys(p).filter(k => !isBlank(p[k]) && !/^(shape|objectid|fid|globalid)/i.test(k))
@@ -914,6 +985,7 @@
         (c.geometry === 'polygon' ? '<label class="opacity" hidden>Opacity <input type="range" min="0" max="100" value="' + Math.round(rt.opacity * 100) + '"><span class="op-val">' + Math.round(rt.opacity * 100) + '%</span></label>' : '') +
         '<div class="layer-meta" hidden></div>' +
         (c.isZoning ? '<div class="zoning-tree" id="zoningTree"></div>' : '') +
+        (c.colorBy && rt.connected ? classTreeHtml(rt) : '') +
       '</div>';
     const cb = row.querySelector('input[type=checkbox]');
     cb.addEventListener('change', () => setLayerOn(rt, cb.checked));
@@ -930,6 +1002,7 @@
     });
     setTimeout(() => setStatus(rt, rt.connected ? (rt.error ? 'error' : 'idle') : 'nc'), 0);
     if (c.isZoning) setTimeout(buildZoningTree, 0);
+    if (c.colorBy && rt.connected) wireClassTree(rt, row);
     return row;
   }
 
@@ -1097,11 +1170,8 @@
         } else {
           html += '<div class="legend-item"><span class="legend-sym">' + swatchHtml(rt.cfg) + '</span>' + esc(rt.cfg.name) + '</div>';
           const cb = rt.cfg.colorBy;
-          if (cb) cb.rules.concat(cb.otherwise ? [cb.otherwise] : []).forEach(r => {
-            const sym = rt.cfg.geometry === 'point'
-              ? '<span class="swatch point" style="background:' + esc(r.fillColor || r.color) + ';border:1.5px solid ' + esc(r.color) + '"></span>'
-              : '<span class="swatch" style="background:' + esc(r.fillColor || r.color) + ';border:1.5px solid ' + esc(r.color) + '"></span>';
-            html += '<div class="legend-item" style="padding-left:14px"><span class="legend-sym">' + sym + '</span>' + esc(r.label) + '</div>';
+          if (cb) classList(rt).filter(r => !(rt.hiddenClasses && rt.hiddenClasses.has(r.label))).forEach(r => {
+            html += '<div class="legend-item" style="padding-left:14px"><span class="legend-sym">' + ruleSwatch(rt, r) + '</span>' + esc(r.label) + '</div>';
           });
         }
       }
@@ -1121,7 +1191,14 @@
   const bufferMiles = () => { const b = CFG.buffers.find(x => x.id === state.bufferId); return b ? b.miles : 0; };
 
   /** Select a feature as the current candidate site. EXTENSION POINT: adjacency / comparison. */
-  async function selectFeature(rt, f) {
+  async function selectFeature(rt, f, opts) {
+    // Clicking the property that is already selected unselects it.
+    if (state.selection && !(opts && opts.keep) &&
+        (state.selection.feature === f || (state.selection.parcel && state.selection.parcel.feature === f) ||
+         (state.selection.rt === rt && featureKey(state.selection.feature) === featureKey(f)))) {
+      clearSelection();
+      return;
+    }
     const token = ++state.selToken;
     map.closePopup();
     const sel = { rt, feature: f, parcel: null, boundary: null, results: {} };
@@ -1155,6 +1232,7 @@
     state.selection = null;
     selectionGroup.clearLayers();
     bufferGroup.clearLayers();
+    searchGroup.clearLayers();
     $('#propertyContent').hidden = true;
     $('#propertyEmpty').hidden = false;
     buildLegend();
@@ -1227,6 +1305,7 @@
 
     const html =
       '<div class="prop-head">' +
+        '<button class="icon-btn prop-close" id="closeSel" title="Unselect this property (or press Esc, or click it again)" aria-label="Unselect property">✕</button>' +
         '<div class="prop-kicker">' + esc(sel.rt.cfg.name) + '</div>' +
         '<div class="prop-title">' + esc(title) + '</div>' +
         '<div class="prop-sub">' + (pid ? 'Parcel ' + esc(pid) : '<span class="na">Parcel ID not in connected data</span>') + '</div>' +
@@ -1236,6 +1315,7 @@
           '<button class="btn small" id="clearSel">Clear selection</button>' +
         '</div>' +
       '</div>' +
+      locationHtml(sel, title) +
       '<div class="buffer-ctl"><span class="small muted">Distance ring</span><span class="seg">' + bufs + '</span></div>' +
 
       '<details class="section" open><summary>Property</summary><div class="section-body"><dl class="kv">' +
@@ -1248,6 +1328,7 @@
         factRow('Land use', facts.landUse) +
         factRow('Buildings', facts.buildings) +
         factRow('Year built', facts.yearBuilt) +
+        factRow('Building floor area', facts.floorArea, facts.floorArea ? ' <span class="muted small">sq ft (Assessor)</span>' : '') +
         factRow('Tax status', facts.taxStatus) +
         factRow('Census tract', facts.tract) +
         factRow('Neighborhood', facts.neighborhood) +
@@ -1271,7 +1352,40 @@
     $('#addShortlist').addEventListener('click', addToShortlist);
     $('#zoomSel').addEventListener('click', zoomToSelection);
     $('#clearSel').addEventListener('click', clearSelection);
+    $('#closeSel').addEventListener('click', clearSelection);
+    const cp = $('#copyCoords');
+    if (cp) cp.addEventListener('click', () => copyText(cp.dataset.text, cp));
     $$('.buffer-ctl button', box).forEach(b => b.addEventListener('click', () => setBuffer(b.dataset.buf || null)));
+  }
+  /** Exact location of the selected site + links to view it in Google Maps / Street View / Google Earth. */
+  function locationHtml(sel, title) {
+    const lat = sel.center[1].toFixed(6), lng = sel.center[0].toFixed(6);
+    const ll = lat + ',' + lng;
+    const links = [
+      ['Google Maps (satellite)', 'https://www.google.com/maps/@?api=1&map_action=map&center=' + ll + '&zoom=20&basemap=satellite'],
+      ['Street View', 'https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=' + ll],
+      ['Google Earth', 'https://earth.google.com/web/@' + lat + ',' + lng + ',190a,250d,35y,0h,45t,0r']
+    ];
+    return '<div class="loc-box">' +
+      '<div class="loc-row"><span class="small muted">Location (lat, long)</span>' +
+        '<code class="loc-coords">' + ll + '</code>' +
+        '<button class="btn small" id="copyCoords" data-text="' + ll + '" title="Copy coordinates">Copy</button></div>' +
+      '<div class="loc-links">' + links.map(([t, u]) => '<a class="btn small" href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + esc(t) + ' ↗</a>').join('') + '</div>' +
+      '<div class="src-note">Point is inside the ' + (sel.boundary ? 'parcel boundary' : 'mapped point') + '. Paste the coordinates into Google Earth\'s search box if a link doesn\'t open there.</div>' +
+    '</div>';
+  }
+  function copyText(text, btn) {
+    const done = ok => { if (btn) { const t = btn.textContent; btn.textContent = ok ? 'Copied ✓' : 'Select & copy'; setTimeout(() => btn.textContent = t, 1500); } };
+    try {
+      if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(() => done(true), () => fallback()); return; }
+    } catch (e) { /* use fallback */ }
+    fallback();
+    function fallback() {
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      let ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove(); done(ok);
+    }
   }
   function ringNote() { const b = CFG.buffers.find(x => x.id === state.bufferId); return b ? 'within ' + b.label + ' (straight line)' : 'ring off'; }
   function loadingRows(rts) {
@@ -1479,15 +1593,7 @@
   /** Fly to a saved site and re-select it from the connected property layers. */
   async function goToSaved(s) {
     map.setView([s.lat, s.lng], Math.max(map.getZoom(), 17));
-    const pt = { type: 'Point', coordinates: [s.lng, s.lat] };
-    for (const rt of propLayers()) {
-      try {
-        const r = await featuresNear(rt, expandBbox(bboxOf(pt), 12));
-        const pidKey = s.parcelId ? r.features.find(f => { const p = pick(f.properties, layerCands(rt, 'parcelId')); return p && String(p.value).trim() === s.parcelId; }) : null;
-        const hit = pidKey || r.features.find(f => isPolyType(f.geometry) ? pointInGeom(pt.coordinates, f.geometry) : distToGeom(pt.coordinates, f.geometry) < 12);
-        if (hit) { selectFeature(rt, hit); return; }
-      } catch (e) { /* try next layer */ }
-    }
+    await selectAt(s.lng, s.lat, s.parcelId);
   }
 
   function exportShortlist(kind) {
@@ -1523,54 +1629,186 @@
   /* ===================================================================
      8. SEARCH, DATA-SOURCES DIALOG, UI WIRING
      =================================================================== */
-  async function runSearch(q) {
-    const box = $('#searchResults');
-    q = q.trim();
-    if (q.length < 3) { box.hidden = true; return; }
-    const layers = propLayers();
-    if (!layers.length) { box.innerHTML = '<div class="sr-msg">Search works once a property layer (DLBA-Owned Properties or Parcel Boundaries) is connected.</div>'; box.hidden = false; return; }
-    box.innerHTML = '<div class="sr-msg">Searching…</div>'; box.hidden = false;
-    const results = [];
-    const up = q.toUpperCase().replace(/'/g, "''");
-    for (const rt of layers) {
+  /* ---------------- SEARCH ----------------
+     One box searches, in order:
+       1. Neighborhoods and named places on the map (layers with searchable: true)
+       2. Properties (address or parcel ID) in the connected property layers
+       3. Any address / landmark via the geocoder in config (search.geocoder)
+     Results stream in as each source answers; stale answers are dropped. */
+  let searchSeq = 0;
+  const searchGroup = L.layerGroup().addTo(map);
+  const STREET_WORDS = new Set(['ST', 'STREET', 'AVE', 'AV', 'AVENUE', 'RD', 'ROAD', 'BLVD', 'BOULEVARD', 'DR', 'DRIVE', 'CT', 'COURT',
+    'PL', 'PLACE', 'LN', 'LANE', 'WAY', 'PKWY', 'PARKWAY', 'HWY', 'TER', 'TERRACE', 'CIR', 'CIRCLE', 'DETROIT', 'MI', 'MICHIGAN']);
+  /** Split a typed address into words worth matching ("10237 Russell St." -> ["10237","RUSSELL"]). */
+  function addressTokens(q) {
+    return q.toUpperCase().replace(/[.,#'"]/g, ' ').split(/\s+/).filter(t => t && !STREET_WORDS.has(t) && !/^\d{5}$/.test(t)).slice(0, 5);
+  }
+  const sqlStr = t => t.replace(/'/g, "''");
+
+  function flashFeature(geom) {
+    searchGroup.clearLayers();
+    if (!geom) return;
+    const gj = { type: 'Feature', geometry: geom, properties: {} };
+    if (isPointType(geom)) {
+      const c = pointsOf(geom)[0];
+      L.circleMarker([c[1], c[0]], { renderer: selRenderer, interactive: false, radius: 14, color: '#d97706', weight: 3, fill: false }).addTo(searchGroup);
+    } else {
+      L.geoJSON(gj, { renderer: selRenderer, interactive: false, style: { color: '#d97706', weight: 3, dashArray: '8 6', fill: false } }).addTo(searchGroup);
+    }
+  }
+  function zoomToGeom(geom, maxZoom) {
+    const bb = bboxOf(geom);
+    if (bb[0] === bb[2] && bb[1] === bb[3]) map.setView([bb[1], bb[0]], Math.max(map.getZoom(), maxZoom || 17));
+    else map.fitBounds([[bb[1], bb[0]], [bb[3], bb[2]]], { maxZoom: maxZoom || 17, padding: [30, 30] });
+  }
+  /** Select whatever property is at a point (used by saved sites and address results). */
+  async function selectAt(lng, lat, parcelId) {
+    const pt = [lng, lat];
+    for (const rt of propLayers()) {
+      try {
+        const r = await featuresNear(rt, expandBbox([lng, lat, lng, lat], 12));
+        const byId = parcelId ? r.features.find(f => { const p = pick(f.properties, layerCands(rt, 'parcelId')); return p && String(p.value).trim() === parcelId; }) : null;
+        const hit = byId || r.features.find(f => isPolyType(f.geometry) ? pointInGeom(pt, f.geometry) : distToGeom(pt, f.geometry) < 12);
+        if (hit) { selectFeature(rt, hit, { keep: true }); return true; }
+      } catch (e) { /* try next layer */ }
+    }
+    return false;
+  }
+
+  async function searchPlaces(q) {
+    const needle = q.toLowerCase();
+    const out = [];
+    for (const rt of state.order.map(id => state.rt[id]).filter(r => r.connected && r.cfg.searchable)) {
+      try {
+        const feats = await ensureLoaded(rt) || [];
+        const hits = [];
+        for (const f of feats) {
+          const name = featureName(f.properties, '', rt);
+          if (!name) continue;
+          const i = name.toLowerCase().indexOf(needle);
+          if (i >= 0) hits.push({ f, name, rank: i === 0 ? 0 : 1 });
+        }
+        hits.sort((x, y) => x.rank - y.rank || x.name.localeCompare(y.name));
+        hits.slice(0, rt.cfg.isNeighborhood ? 6 : 4).forEach(h => out.push({
+          group: rt.cfg.isNeighborhood ? 'Neighborhoods' : 'Places on the map',
+          label: h.name, sub: rt.cfg.name + (featureAddress(h.f.properties, rt) ? ' · ' + featureAddress(h.f.properties, rt) : ''),
+          go: () => {
+            zoomToGeom(h.f.geometry, rt.cfg.isNeighborhood ? 15 : 17);
+            flashFeature(h.f.geometry);
+            if (!rt.cfg.isNeighborhood) { const c = repPoint(h.f.geometry); L.popup({ maxWidth: 320 }).setLatLng([c[1], c[0]]).setContent(popupHtml(rt, h.f)).openOn(map); }
+          }
+        }));
+      } catch (e) { /* layer unavailable: skip */ }
+    }
+    return out;
+  }
+
+  async function searchProperties(q) {
+    const tokens = addressTokens(q);
+    const raw = q.trim().toUpperCase();
+    const out = [];
+    for (const rt of propLayers()) {
+      if (rt.cfg.searchable === false) continue;
       try {
         let feats = [];
-        if (rt.cfg.source.type === 'arcgis') {
+        if (rt.cfg.source.type === 'arcgis' && !rt.loaded) {   // ask the server rather than downloading the whole layer
           const meta = await arcgisMeta(rt);
-          const names = (meta.fields || []).map(f => f.name);
-          const fake = Object.fromEntries(names.map(n => [n, 1]));
+          const fake = Object.fromEntries((meta.fields || []).map(f => [f.name, 1]));
           const aK = findKey(fake, layerCands(rt, 'address')), pK = findKey(fake, layerCands(rt, 'parcelId'));
-          const clauses = [];
-          if (aK) clauses.push('UPPER(' + aK + ") LIKE '%" + up + "%'");
-          if (pK) clauses.push('UPPER(' + pK + ") LIKE '" + up + "%'");
-          if (!clauses.length) continue;
+          const ors = [];
+          if (aK && tokens.length) ors.push('(' + tokens.map(t => 'UPPER(' + aK + ") LIKE '%" + sqlStr(t) + "%'").join(' AND ') + ')');
+          if (pK && /\d/.test(raw)) ors.push('UPPER(' + pK + ") LIKE '" + sqlStr(raw.replace(/\s+/g, '')) + "%'");
+          if (!ors.length) continue;
           const base = rt.cfg.source.where && rt.cfg.source.where !== '1=1' ? '(' + rt.cfg.source.where + ') AND ' : '';
-          const r = await arcgisQueryPage(rt, { where: base + '(' + clauses.join(' OR ') + ')', resultRecordCount: 8 });
+          const r = await arcgisQueryPage(rt, { where: base + '(' + ors.join(' OR ') + ')', resultRecordCount: 6 });
           feats = r.features.filter(f => f.geometry);
         } else {
           const all = await ensureLoaded(rt) || [];
           feats = all.filter(f => {
             const a = pick(f.properties, layerCands(rt, 'address')), p = pick(f.properties, layerCands(rt, 'parcelId'));
-            return (a && String(a.value).toUpperCase().includes(q.toUpperCase())) || (p && String(p.value).toUpperCase().startsWith(q.toUpperCase()));
-          }).slice(0, 8);
+            const A = a ? String(a.value).toUpperCase() : '';
+            return (tokens.length && tokens.every(t => A.includes(t))) || (p && /\d/.test(raw) && String(p.value).toUpperCase().startsWith(raw.replace(/\s+/g, '')));
+          }).slice(0, 6);
         }
-        feats.forEach(f => results.push({ rt, f }));
-      } catch (e) { console.warn('Search failed for', rt.cfg.name, e); }
+        feats.forEach(f => {
+          const a = pick(f.properties, layerCands(rt, 'address')), p = pick(f.properties, layerCands(rt, 'parcelId'));
+          out.push({ group: 'Properties', label: a ? String(a.value) : 'Unaddressed', sub: (p ? 'Parcel ' + p.value + ' · ' : '') + rt.cfg.name,
+            go: () => { zoomToGeom(f.geometry, 18); searchGroup.clearLayers(); selectFeature(rt, f, { keep: true }); } });
+        });
+      } catch (e) { console.warn('Search failed for', rt.cfg.name, e.message); }
     }
-    if (!results.length) { box.innerHTML = '<div class="sr-msg">No matches in connected property layers.</div>'; return; }
+    return out;
+  }
+
+  async function searchGeocoder(q) {
+    const g = CFG.search && CFG.search.geocoder;
+    if (!g || !g.url) return [];
+    const b = cityBounds || L.latLngBounds([CFG.map.center, CFG.map.center]).pad(2);
+    const ext = { xmin: b.getWest(), ymin: b.getSouth(), xmax: b.getEast(), ymax: b.getNorth(), spatialReference: { wkid: 4326 } };
+    const qs = new URLSearchParams({ f: 'json', singleLine: q, searchExtent: JSON.stringify(ext), location: CFG.map.center[1] + ',' + CFG.map.center[0],
+      maxLocations: '6', outFields: 'Match_addr,Addr_type,Type', outSR: '4326' });
+    const res = await fetch(g.url + '/findAddressCandidates?' + qs.toString(), { referrerPolicy: 'no-referrer' });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message || 'geocoder error');
+    const seen = new Set();
+    return (data.candidates || []).filter(c => c.score >= (g.minScore || 80)).filter(c => {
+      const k = c.address + '|' + c.location.x.toFixed(2) + '|' + c.location.y.toFixed(2);   // same name within ~1 km = duplicate
+      if (seen.has(k)) return false; seen.add(k); return true;
+    }).map(c => {
+      const at = (c.attributes || {}).Addr_type || '';
+      const kind = (c.attributes || {}).Type || at;
+      const isAddress = /PointAddress|StreetAddress|Subaddress/i.test(at);
+      return {
+        group: 'Addresses & landmarks', label: c.address, sub: (kind ? kind + ' · ' : '') + (g.label || 'Geocoder'),
+        go: async () => {
+          const pt = { type: 'Point', coordinates: [c.location.x, c.location.y] };
+          if (c.extent && !isAddress) map.fitBounds([[c.extent.ymin, c.extent.xmin], [c.extent.ymax, c.extent.xmax]], { maxZoom: 16 });
+          else map.setView([c.location.y, c.location.x], 18);
+          flashFeature(pt);
+          if (isAddress) await selectAt(c.location.x, c.location.y);
+        }
+      };
+    });
+  }
+
+  function renderSearch(results, pending, q) {
+    const box = $('#searchResults');
     box.innerHTML = '';
-    results.slice(0, 16).forEach(({ rt, f }) => {
-      const a = pick(f.properties, layerCands(rt, 'address')), p = pick(f.properties, layerCands(rt, 'parcelId'));
+    let lastGroup = null;
+    const order = ['Neighborhoods', 'Places on the map', 'Properties', 'Addresses & landmarks'];
+    results.sort((x, y) => order.indexOf(x.group) - order.indexOf(y.group));
+    results.forEach((r, i) => {
+      if (r.group !== lastGroup) { box.insertAdjacentHTML('beforeend', '<div class="sr-group">' + esc(r.group) + '</div>'); lastGroup = r.group; }
       const b = document.createElement('button');
-      b.innerHTML = esc(a ? a.value : 'Unaddressed') + '<div class="sr-sub">' + esc((p ? 'Parcel ' + p.value + ' · ' : '') + rt.cfg.name) + '</div>';
-      b.addEventListener('click', () => {
-        box.hidden = true;
-        const bb = bboxOf(f.geometry);
-        if (bb[0] === bb[2]) map.setView([bb[1], bb[0]], Math.max(map.getZoom(), 17)); else map.fitBounds([[bb[1], bb[0]], [bb[3], bb[2]]], { maxZoom: 18 });
-        selectFeature(rt, f);
-      });
+      b.innerHTML = esc(r.label) + '<div class="sr-sub">' + esc(r.sub) + '</div>';
+      b.addEventListener('click', () => { box.hidden = true; r.go(); });
+      if (i === 0) b.classList.add('first');
       box.appendChild(b);
     });
+    if (pending) box.insertAdjacentHTML('beforeend', '<div class="sr-msg">Searching…</div>');
+    else if (!results.length) box.insertAdjacentHTML('beforeend', '<div class="sr-msg">No matches for "' + esc(q) + '". Try a street name, neighborhood, place name or parcel ID.</div>');
+    if (results.some(r => r.group === 'Addresses & landmarks')) box.insertAdjacentHTML('beforeend', '<div class="sr-credit">Address search by ' + esc((CFG.search.geocoder.label) || 'geocoder') + '</div>');
+    box.hidden = false;
+  }
+
+  async function runSearch(q) {
+    const seq = ++searchSeq;
+    q = q.trim();
+    const box = $('#searchResults');
+    if (q.length < 2) { box.hidden = true; state.searchResults = []; return; }
+    const results = [];
+    state.searchResults = results;
+    let pending = 3;
+    renderSearch(results, true, q);
+    const add = list => {
+      if (seq !== searchSeq) return;
+      results.push(...list); pending--;
+      renderSearch(results, pending > 0, q);
+    };
+    const fail = () => { if (seq !== searchSeq) return; pending--; renderSearch(results, pending > 0, q); };
+    searchPlaces(q).then(add, fail);
+    searchProperties(q).then(add, fail);
+    searchGeocoder(q).then(add, e => { console.warn('Geocoder:', e.message); fail(); });
   }
 
   function sourcesRows() {
@@ -1602,7 +1840,7 @@
     download('detroit-map-sources-' + today() + '.csv', [cols.join(',')].concat(rows.map(r => cols.map(c => csvCell(r[c])).join(','))).join('\r\n'), 'text/csv');
   }
 
-  function isNarrow() { return window.matchMedia('(max-width: 900px)').matches; }
+  function isNarrow() { return window.matchMedia('(max-width: 1100px)').matches; }
   function togglePanel(side) {
     const lay = $('#layout');
     if (isNarrow()) lay.classList.toggle(side + '-open');
@@ -1654,6 +1892,11 @@
     loadShortlist();
     renderShortlist();
 
+    // Keep Leaflet's idea of the map size in sync with the page (window resize, panels opening/closing).
+    if (window.ResizeObserver) new ResizeObserver(() => map.invalidateSize({ pan: false })).observe($('#map'));
+    // In the floating-panel layout, start with the layers panel open so the controls are visible.
+    if (isNarrow()) $('#layout').classList.add('left-open');
+
     // Wiring
     $('#toggleLeft').addEventListener('click', () => togglePanel('left'));
     $('#toggleRight').addEventListener('click', () => togglePanel('right'));
@@ -1676,7 +1919,13 @@
     const search = $('#searchInput');
     const doSearch = debounce(() => runSearch(search.value), 450);
     search.addEventListener('input', doSearch);
-    search.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(search.value); if (e.key === 'Escape') $('#searchResults').hidden = true; });
+    search.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        const first = $('#searchResults button.first');
+        if (first && !$('#searchResults').hidden) first.click(); else runSearch(search.value);
+      }
+      if (e.key === 'Escape') { $('#searchResults').hidden = true; searchGroup.clearLayers(); }
+    });
     document.addEventListener('click', e => { if (!e.target.closest('.search')) $('#searchResults').hidden = true; });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && state.selection && !$('#sourcesDialog').open && document.activeElement !== search) clearSelection(); });
 
